@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from sqlalchemy.orm import Session
 from database import engine, Base, get_db
 import models
@@ -16,7 +16,7 @@ os.makedirs("uploaded_files", exist_ok=True)
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello! The Land Record Backend is running successfully."}
+    return FileResponse("index.html")
 
 # ==========================================
 # UPLOAD & FETCH APIs
