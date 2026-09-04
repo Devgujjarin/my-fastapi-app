@@ -5,6 +5,7 @@ from database import engine, Base, get_db
 import models
 import shutil
 import os
+import re
 
 # Create database tables when the app starts
 Base.metadata.create_all(bind=engine)
@@ -57,69 +58,100 @@ def get_documents(db: Session = Depends(get_db)):
     ]
 
 # ==========================================
-# DELETE API (NEW!)
+# DELETE API
 # ==========================================
 
 @app.delete("/api/documents/{document_id}/")
 def delete_document(document_id: int, db: Session = Depends(get_db)):
-    # Step 1: Find the document in the database
     doc = db.query(models.Document).filter(models.Document.id == document_id).first()
-    
     if not doc:
         return {"error": "Document not found"}
     
-    # Step 2: Delete the actual file from the 'uploaded_files' folder
     if os.path.exists(doc.file_path):
         os.remove(doc.file_path)
     
-    # Step 3: Delete the related land records (if any)
     db.query(models.LandRecord).filter(models.LandRecord.document_id == document_id).delete()
-    
-    # Step 4: Delete the document record from the database
     db.delete(doc)
     db.commit()
     
     return {"message": f"Document {document_id} deleted successfully!"}
 
 # ==========================================
-# AI SIMULATION & VERIFICATION APIs
+# AI EXTRACTION API (REAL OCR)
 # ==========================================
 
 @app.post("/api/records/extract/")
 def simulate_ai_extraction(document_id: int, db: Session = Depends(get_db)):
+    import easyocr
+    
     doc = db.query(models.Document).filter(models.Document.id == document_id).first()
     if not doc:
         return {"error": "Document not found"}
     
-    doc.status = "COMPLETED"
+    doc.status = "PROCESSING"
     db.commit()
-
-    # TODO: During the hackathon, your AI teammate will give you a function like this:
-    # real_ai_data = ai_teammate.extract_text(doc.file_path)
     
-    # For now, we will just save empty/placeholder data until the AI is ready
-    real_ai_data = {
-        "owner_name": "Pending AI Extraction",
-        "khasra_number": "Pending",
-        "plot_area": 0.0,
-        "village": "Pending",
-        "confidence_score": 0.0
-    }
+    try:
+        reader = easyocr.Reader(['en', 'hi'], gpu=False)
+        results = reader.readtext(doc.file_path)
+        extracted_text = " ".join([r[1] for r in results])
+        
+        avg_confidence = sum([r[2] for r in results]) / len(results) * 100 if results else 0.0
+        text_upper = extracted_text.upper()
+        
+        khata_match = re.search(r'KHATA\s*NO\.?\s*[:\-]?\s*(\d+)', text_upper)
+        khata = khata_match.group(1) if khata_match else "Not Detected"
+        
+        tehsil_match = re.search(r'TEHSIL\s*[:\-]?\s*([A-Z\s]+?)(?:DISTRICT|$)', text_upper)
+        tehsil = tehsil_match.group(1).strip() if tehsil_match else "Not Detected"
+        
+        district_match = re.search(r'DISTRICT\s*[:\-]?\s*([A-Z\s]+?)(?:STATE|$)', text_upper)
+        district = district_match.group(1).strip() if district_match else "Not Detected"
+        
+        classification_match = re.search(r'(AGRICULTURAL|RESIDENTIAL|COMMERCIAL|BARREN)', text_upper)
+        classification = classification_match.group(1).title() if classification_match else "Not Detected"
 
-    new_record = models.LandRecord(
-        document_id=document_id,
-        owner_name=real_ai_data["owner_name"],
-        khasra_number=real_ai_data["khasra_number"],
-        plot_area=real_ai_data["plot_area"],
-        village=real_ai_data["village"],
-        confidence_score=real_ai_data["confidence_score"],
-        is_verified=False
-    )
-    db.add(new_record)
-    db.commit()
-    db.refresh(new_record)
+        new_record = models.LandRecord(
+            document_id=document_id,
+            owner_name=extracted_text[:50] if extracted_text else "Not Detected",
+            khasra_number=re.search(r'KHASRA\s*[:\-]?\s*(\d+[/\d]*)', text_upper).group(1) if re.search(r'KHASRA\s*[:\-]?\s*(\d+[/\d]*)', text_upper) else "Not Detected",
+            khata_number=khata,
+            plot_area=float(re.search(r'(\d+\.?\d*)\s*(?:ACRE|HECTARE)', text_upper).group(1)) if re.search(r'(\d+\.?\d*)\s*(?:ACRE|HECTARE)', text_upper) else 0.0,
+            village=re.search(r'VILLAGE\s*[:\-]?\s*([A-Z\s]+?)(?:TEHSIL|$)', text_upper).group(1).strip() if re.search(r'VILLAGE\s*[:\-]?\s*([A-Z\s]+?)(?:TEHSIL|$)', text_upper) else "Not Detected",
+            tehsil=tehsil,
+            district=district,
+            land_classification=classification,
+            confidence_score=round(avg_confidence, 2),
+            is_verified=False
+        )
+        
+        doc.status = "COMPLETED"
+        db.add(new_record)
+        db.commit()
+        db.refresh(new_record)
+        
+        return {
+            "message": "AI extraction completed!",
+            "record_id": new_record.id,
+            "owner_name": new_record.owner_name,
+            "khasra_number": new_record.khasra_number,
+            "khata_number": new_record.khata_number,
+            "plot_area": new_record.plot_area,
+            "village": new_record.village,
+            "tehsil": new_record.tehsil,
+            "district": new_record.district,
+            "land_classification": new_record.land_classification,
+            "confidence_score": new_record.confidence_score
+        }
+        
+    except Exception as e:
+        doc.status = "ERROR"
+        db.commit()
+        return {"error": f"OCR failed: {str(e)}"}
 
-    return {"message": "AI extraction simulated and saved!", "record_id": new_record.id}
+# ==========================================
+# PENDING VERIFICATIONS API
+# ==========================================
 
 @app.get("/api/records/pending/")
 def get_pending_verifications(db: Session = Depends(get_db)):
@@ -139,7 +171,9 @@ def get_pending_verifications(db: Session = Depends(get_db)):
             "confidence_score": rec.confidence_score
         }
         for rec in pending_records
-    ]# ==========================================
+    ]
+
+# ==========================================
 # HTML DASHBOARD
 # ==========================================
 
