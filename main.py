@@ -10,7 +10,7 @@ import re
 # Create database tables when the app starts
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Land Record System")
+   app = FastAPI(title="Land Record System", docs_url=None, redoc_url=None)
 
 # Create a folder to store the actual uploaded files
 os.makedirs("uploaded_files", exist_ok=True)
