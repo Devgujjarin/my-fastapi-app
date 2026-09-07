@@ -2,3 +2,6 @@
    uvicorn
    sqlalchemy
    python-multipart
+   google-genai
+   Pillow
+   PyMuPDF
